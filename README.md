@@ -24,6 +24,8 @@ The gateway listens on loopback by default. Set `ROUTER_BIND` to change the addr
 
 Set `ROUTER_ALLOW_LARGE_FALLBACK=true` to try the large backend once when a small-backend request receives HTTP 429 or 503. Use this option when the large backend is approved to receive the same payload and its cost is acceptable. The response gives the final attempted tier in `x-inference-tier` and the small-backend status in `x-inference-fallback` when fallback occurs. The router forwards the final backend's `Retry-After` header. Each upstream attempt has a 120-second timeout. Connection errors and timeouts end after the first attempt because the upstream may still process them. The paired evaluator measures routing under available backends.
 
+The router returns HTTP 502 if the final upstream response body exceeds 4 MiB.
+
 ## Evaluate
 
 `evaluate examples.jsonl` checks route labels. Run `evaluate-paired` to compare spend and quality on the same requests across thresholds and an always-large baseline.

@@ -2,6 +2,7 @@
 
 use axum::{
     Json, Router,
+    body::Body,
     http::{HeaderMap, StatusCode},
     routing::post,
 };
@@ -290,6 +291,55 @@ fn defaults_to_the_documented_loopback_port_without_an_override() {
         stderr.contains("bind complexity router to 127.0.0.1:8010"),
         "{stderr}"
     );
+}
+
+#[tokio::test]
+async fn rejects_oversized_upstream_responses_and_preserves_at_limit_responses() {
+    const LIMIT: usize = 4 * 1024 * 1024;
+    let upstream = Router::new().route(
+        "/v1/chat/completions",
+        post(|Json(body): Json<Value>| async move {
+            let prompt = body["messages"][0]["content"].as_str().unwrap();
+            let size = if prompt == "limit" { LIMIT } else { LIMIT + 1 };
+            let body = Body::from("x".repeat(size));
+            let body = if prompt == "fixed" {
+                body
+            } else {
+                Body::from_stream(body.into_data_stream())
+            };
+            (StatusCode::OK, [("content-type", "text/plain")], body)
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let (mut router, client, base) = RouterProcess::start(&url, true).await;
+    let mut statuses = Vec::new();
+    for prompt in ["fixed", "chunked", "limit"] {
+        let reply = client
+            .post(format!("{base}/v1/chat/completions"))
+            .json(&json!({"messages": [{"role": "user", "content": prompt}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.headers()["x-inference-tier"], "small");
+        assert!(!reply.headers().contains_key("x-inference-fallback"));
+        statuses.push(reply.status());
+        if prompt == "limit" {
+            assert_eq!(reply.headers()["content-type"], "text/plain");
+            assert_eq!(reply.bytes().await.unwrap().len(), LIMIT);
+        }
+    }
+    assert_eq!(
+        statuses,
+        [
+            StatusCode::BAD_GATEWAY,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::OK
+        ]
+    );
+    router.interrupt();
+    upstream.abort();
 }
 
 #[test]
