@@ -8,7 +8,14 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::HashMap, env, fs::File, io::{BufRead, BufReader}, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    env,
+    fs::File,
+    io::{BufRead, BufReader},
+    time::Duration,
+};
 
 mod paired;
 #[cfg(test)]
@@ -141,8 +148,24 @@ fn route_input(body: &Value) -> Result<(String, bool), &'static str> {
         }
         if let Some(content) = message.get("content") {
             match content {
-                Value::String(text) => context.push(text.as_str()),
+                Value::String(text) => context.push(Cow::Borrowed(text.as_str())),
                 Value::Null => {}
+                Value::Array(parts) if !parts.is_empty() => {
+                    let text_parts = parts
+                        .iter()
+                        .map(|part| {
+                            if part.get("type").and_then(Value::as_str) == Some("text") {
+                                part.get("text").and_then(Value::as_str)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    match text_parts {
+                        Some(text) => context.push(Cow::Owned(text.join(" "))),
+                        None => force_large = true,
+                    }
+                }
                 _ => force_large = true,
             }
         }

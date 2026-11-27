@@ -79,7 +79,9 @@ async fn forwards_chat_and_forces_large_for_tools_and_multimodal_parts() {
     assert_eq!(headers["x-inference-tier"], "large");
     assert_eq!(headers[header::CONTENT_TYPE], "application/json");
     assert_eq!(body["auth"], "Bearer fixture-key");
-    let image = json!({"messages":[{"role":"user", "content":[{"type":"text","text":"Analyze"}]}]});
+    let image = json!({"messages":[{"role":"user", "content":[
+        {"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}
+    ]}]});
     let (_, headers, _) = read(complete(State(state), Json(image)).await).await;
     assert_eq!(headers["x-inference-tier"], "large");
     upstream.abort();

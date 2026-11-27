@@ -99,28 +99,63 @@ async fn serves_chat_and_shuts_down_cleanly_on_interrupt() {
     let upstream = Router::new().route(
         "/v1/chat/completions",
         post(|Json(value): Json<Value>| async move {
-            Json(json!({"model": value["model"], "max_tokens": value["max_tokens"]}))
+            Json(json!({
+                "model": value["model"],
+                "messages": value["messages"],
+                "max_tokens": value["max_tokens"],
+            }))
         }),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_url = format!("http://{}/v1/", listener.local_addr().unwrap());
     let upstream = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
     let (mut router, client, base) = RouterProcess::start(&upstream_url, false).await;
-    let reply = client
-        .post(format!("{base}/v1/chat/completions"))
-        .json(&json!({
-            "stream": false,
-            "messages":[{"role":"user","content":"Hi"}],
-            "max_tokens": 43
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reply.headers()["x-inference-tier"], "small");
-    assert_eq!(
-        reply.json::<Value>().await.unwrap(),
-        json!({"model":"quantized-8b", "max_tokens":43})
-    );
+    for (content, tier, model) in [
+        (json!("Hi there"), "small", "quantized-8b"),
+        (
+            json!([
+                {"type":"text", "text":"Hi"},
+                {"type":"text", "text":"there"}
+            ]),
+            "small",
+            "quantized-8b",
+        ),
+        (
+            json!([
+                {"type":"text", "text":"derive"},
+                {"type":"text", "text":"compare ```code```"}
+            ]),
+            "large",
+            "larger-fixture",
+        ),
+        (
+            json!([
+                {"type":"text", "text":"Hi there"},
+                {"type":"image_url", "image_url":{"url":"https://example.invalid/image.png"}}
+            ]),
+            "large",
+            "larger-fixture",
+        ),
+        (
+            json!([{"type":"text", "text":42}]),
+            "large",
+            "larger-fixture",
+        ),
+        (json!([]), "large", "larger-fixture"),
+    ] {
+        let messages = json!([{"role":"user", "content":content}]);
+        let reply = client
+            .post(format!("{base}/v1/chat/completions"))
+            .json(&json!({"stream":false, "messages":messages, "max_tokens":43}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.headers()["x-inference-tier"], tier, "{content}");
+        assert_eq!(
+            reply.json::<Value>().await.unwrap(),
+            json!({"model":model, "messages":messages, "max_tokens":43})
+        );
+    }
     router.interrupt();
     upstream.abort();
 }

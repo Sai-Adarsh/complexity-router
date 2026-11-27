@@ -1,6 +1,6 @@
 # Multi-model complexity router
 
-This Rust HTTP gateway routes chat requests between a quantized 8B model and a larger reasoning model. The routing score combines Shannon entropy over case-folded words, prompt length, reasoning terms, and code blocks. Tool and multimodal requests go directly to the large model. The gateway replaces the request's model ID and adds `x-inference-tier` to the upstream response.
+This Rust HTTP gateway routes chat requests between a quantized 8B model and a larger reasoning model. The routing score combines Shannon entropy over case-folded words, prompt length, reasoning terms, and code blocks. It scores plain strings and text-only content arrays, joining text parts with spaces for scoring. Tool and multimodal requests go directly to the large model. The gateway replaces the request's model ID and adds `x-inference-tier` to the upstream response.
 
 ## Run
 
