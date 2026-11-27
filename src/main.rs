@@ -99,6 +99,22 @@ struct AppState {
     small: Backend,
     large: Backend,
     threshold: f64,
+    allow_large_fallback: bool,
+}
+
+impl AppState {
+    async fn send(&self, tier: Tier, body: &mut Value) -> reqwest::Result<reqwest::Response> {
+        let backend = match tier {
+            Tier::Small => &self.small,
+            Tier::Large => &self.large,
+        };
+        body["model"] = json!(backend.model);
+        let mut request = self.client.post(&backend.url).json(body);
+        if let Some(key) = &backend.api_key {
+            request = request.bearer_auth(key);
+        }
+        request.send().await
+    }
 }
 
 fn failure(status: StatusCode, message: &str) -> Response {
@@ -141,26 +157,43 @@ async fn complete(State(state): State<AppState>, Json(mut body): Json<Value>) ->
         Err(error) => return failure(StatusCode::BAD_REQUEST, error),
     };
     let decision = classify(&context, state.threshold, force_large);
-    let backend = match decision.route {
-        Tier::Small => &state.small,
-        Tier::Large => &state.large,
+    let mut tier = decision.route;
+    let mut reply = state.send(tier, &mut body).await;
+    let fallback = if state.allow_large_fallback && tier == Tier::Small {
+        match reply.as_ref().map(reqwest::Response::status) {
+            Ok(StatusCode::TOO_MANY_REQUESTS) => Some("small_http_429"),
+            Ok(StatusCode::SERVICE_UNAVAILABLE) => Some("small_http_503"),
+            _ => None,
+        }
+    } else {
+        None
     };
-    body["model"] = json!(backend.model);
-    let mut request = state.client.post(&backend.url).json(&body);
-    if let Some(key) = &backend.api_key {
-        request = request.bearer_auth(key);
+    if fallback.is_some() {
+        drop(reply);
+        tier = Tier::Large;
+        reply = state.send(tier, &mut body).await;
     }
-    let upstream = match request.send().await {
-        Ok(response) => response,
-        Err(error) if error.is_timeout() => return failure(StatusCode::GATEWAY_TIMEOUT, "Model request timed out."),
-        Err(_) => return failure(StatusCode::BAD_GATEWAY, "Model endpoint is unavailable."),
+    let mut response = match reply {
+        Ok(upstream) => forward(upstream).await,
+        Err(error) if error.is_timeout() => failure(StatusCode::GATEWAY_TIMEOUT, "Model request timed out."),
+        Err(_) => failure(StatusCode::BAD_GATEWAY, "Model endpoint is unavailable."),
     };
+    let headers = response.headers_mut();
+    headers.insert("x-inference-tier", header::HeaderValue::from_static(tier.name()));
+    if let Some(reason) = fallback {
+        headers.insert("x-inference-fallback", header::HeaderValue::from_static(reason));
+    }
+    response
+}
+
+async fn forward(upstream: reqwest::Response) -> Response {
     let status = upstream.status();
     let mut headers = HeaderMap::new();
-    if let Some(content_type) = upstream.headers().get(header::CONTENT_TYPE) {
-        headers.insert(header::CONTENT_TYPE, content_type.clone());
+    for name in [header::CONTENT_TYPE, header::RETRY_AFTER] {
+        if let Some(value) = upstream.headers().get(&name) {
+            headers.insert(name, value.clone());
+        }
     }
-    headers.insert("x-inference-tier", header::HeaderValue::from_static(decision.route.name()));
     match upstream.bytes().await {
         Ok(bytes) => (status, headers, bytes).into_response(),
         Err(_) => failure(StatusCode::BAD_GATEWAY, "Model response was incomplete."),
@@ -223,12 +256,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             paired::evaluate(records, rates, thresholds, threshold)
         }
         ["serve"] | [] => {
+            let allow_large_fallback: bool = env::var("ROUTER_ALLOW_LARGE_FALLBACK")
+                .unwrap_or_else(|_| "false".into()).parse()
+                .map_err(|_| "ROUTER_ALLOW_LARGE_FALLBACK must be true or false")?;
             let state = AppState {
                 client: reqwest::Client::builder().timeout(Duration::from_secs(120))
                     .redirect(reqwest::redirect::Policy::none()).build()?,
                 small: Backend::from_env("SMALL", "quantized-8b")?,
                 large: Backend::from_env("LARGE", "reasoning-405b")?,
                 threshold,
+                allow_large_fallback,
             };
             let app = Router::new()
                 .route("/healthz", get(|| async { Bytes::from_static(b"ok\n") }))

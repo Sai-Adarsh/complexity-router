@@ -22,6 +22,8 @@ curl -i http://127.0.0.1:8010/v1/chat/completions \
 
 The gateway listens on loopback by default. Set `ROUTER_BIND` to change the address and `ROUTE_THRESHOLD` to change the score cutoff. It supports nonstreaming chat completions. [vLLM serving API](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/).
 
+Set `ROUTER_ALLOW_LARGE_FALLBACK=true` to try the large backend once when a small-backend request receives HTTP 429 or 503. Use this option when the large backend is approved to receive the same payload and its cost is acceptable. The response gives the final attempted tier in `x-inference-tier` and the small-backend status in `x-inference-fallback` when fallback occurs. The router forwards the final backend's `Retry-After` header. Each upstream attempt has a 120-second timeout. Connection errors and timeouts end after the first attempt because the upstream may still process them. The paired evaluator measures routing under available backends.
+
 ## Evaluate
 
 `evaluate examples.jsonl` checks route labels. Run `evaluate-paired` to compare spend and quality on the same requests across thresholds and an always-large baseline.
