@@ -43,6 +43,7 @@ async fn state() -> (AppState, tokio::task::JoinHandle<()>) {
             api_key: Some("fixture-key".into()),
         },
         threshold: 3.2,
+        allow_large_fallback: false,
     };
     (state, task)
 }
