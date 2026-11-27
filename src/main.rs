@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, env, fs::File, io::{BufRead, BufReader}, time::Duration};
 
 mod paired;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -235,7 +237,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_state(state);
             let listener = tokio::net::TcpListener::bind(env::var("ROUTER_BIND").unwrap_or_else(|_| "127.0.0.1:8010".into())).await?;
             eprintln!("Complexity router listening on {}", listener.local_addr()?);
-            axum::serve(listener, app).await?;
+            axum::serve(listener, app).with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            }).await?;
             Ok(())
         }
         _ => Err("usage: complexity-router [demo | evaluate PROMPTS.jsonl | evaluate-paired RECORDS.jsonl RATES.json [THRESHOLD ...] | serve]".into()),
