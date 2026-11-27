@@ -1,0 +1,13 @@
+{
+  "data_kind": "fixture",
+  "small": {
+    "model": "fixture-8b",
+    "input_usd_per_million_tokens": 0.2,
+    "output_usd_per_million_tokens": 0.5
+  },
+  "large": {
+    "model": "fixture-405b",
+    "input_usd_per_million_tokens": 2.0,
+    "output_usd_per_million_tokens": 6.0
+  }
+}
