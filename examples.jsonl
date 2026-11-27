@@ -1,0 +1,6 @@
+{"prompt":"Translate hello to French.","route":"small"}
+{"prompt":"What is 12 times 3?","route":"small"}
+{"prompt":"Rewrite this sentence in the past tense: I walk home.","route":"small"}
+{"prompt":"Design an inference gateway. Compare the failure modes of local and remote model fallback.","route":"large"}
+{"prompt":"Derive the prefill cost and prove when caching decreases end to end latency.","route":"large"}
+{"prompt":"Debug this intermittent deadlock step by step and explain the memory ordering assumptions.","route":"large"}
