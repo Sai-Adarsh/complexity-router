@@ -272,7 +272,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .route("/v1/chat/completions", post(complete))
                 .layer(DefaultBodyLimit::max(1024 * 1024))
                 .with_state(state);
-            let listener = tokio::net::TcpListener::bind(env::var("ROUTER_BIND").unwrap_or_else(|_| "127.0.0.1:8010".into())).await?;
+            let bind = env::var("ROUTER_BIND").unwrap_or_else(|_| "127.0.0.1:8010".into());
+            let listener = tokio::net::TcpListener::bind(bind.as_str()).await.map_err(|error| {
+                std::io::Error::new(error.kind(), format!("bind complexity router to {bind}: {error}"))
+            })?;
             eprintln!("Complexity router listening on {}", listener.local_addr()?);
             axum::serve(listener, app).with_graceful_shutdown(async {
                 let _ = tokio::signal::ctrl_c().await;

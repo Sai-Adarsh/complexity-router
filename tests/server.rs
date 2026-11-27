@@ -148,7 +148,8 @@ async fn falls_back_only_for_explicit_capacity_rejections_when_enabled() {
                     .lock()
                     .unwrap()
                     .push((model.to_owned(), auth, body["max_tokens"].clone()));
-                (status, [("Retry-After", "7")], Json(json!({"model":model})))
+                let retry_after = if model == "quantized-8b" { "4" } else { "7" };
+                (status, [("Retry-After", retry_after)], Json(json!({"model":model})))
             }
         }),
     );
@@ -233,18 +234,20 @@ async fn falls_back_only_for_explicit_capacity_rejections_when_enabled() {
                 .map(|v| v.to_str().unwrap()),
             reason
         );
-        if expected == StatusCode::TOO_MANY_REQUESTS || expected == StatusCode::SERVICE_UNAVAILABLE
-        {
-            assert_eq!(response.headers()["retry-after"], "7");
-        }
+        assert_eq!(
+            response.headers()["retry-after"],
+            if tier == "small" { "4" } else { "7" }
+        );
         let observed = std::mem::take(&mut *calls.lock().unwrap());
         assert_eq!(observed.len(), if reason.is_some() { 2 } else { 1 });
-        for (model, auth, max_tokens) in observed {
-            let expected_auth = if model == "quantized-8b" {
-                "small"
-            } else {
-                "large"
-            };
+        for (index, (model, auth, max_tokens)) in observed.into_iter().enumerate() {
+            let (expected_model, expected_auth) =
+                if tier == "small" || (reason.is_some() && index == 0) {
+                    ("quantized-8b", "small")
+                } else {
+                    ("larger-fixture", "large")
+                };
+            assert_eq!(model, expected_model);
             assert_eq!(auth, format!("Bearer {expected_auth}-fixture-credential"));
             assert_eq!(max_tokens, 43);
         }
@@ -264,6 +267,7 @@ fn defaults_to_the_documented_loopback_port_without_an_override() {
         Command::new(BIN)
             .arg("serve")
             .env_remove("ROUTER_BIND")
+            .env_remove("ROUTER_ALLOW_LARGE_FALLBACK")
             .env("ROUTE_THRESHOLD", "3.2")
             .env("SMALL_BASE_URL", "http://127.0.0.1:1/")
             .env("LARGE_BASE_URL", "http://127.0.0.1:1/")
@@ -282,12 +286,17 @@ fn defaults_to_the_documented_loopback_port_without_an_override() {
         .unwrap();
     assert!(!status.success());
     assert!(stderr.contains("AddrInUse"), "{stderr}");
+    assert!(
+        stderr.contains("bind complexity router to 127.0.0.1:8010"),
+        "{stderr}"
+    );
 }
 
 #[test]
 fn rejects_unsupported_backend_urls_at_startup() {
     let output = Command::new(BIN)
         .arg("serve")
+        .env_remove("ROUTER_ALLOW_LARGE_FALLBACK")
         .env("SMALL_BASE_URL", "ftp://127.0.0.1")
         .env("ROUTE_THRESHOLD", "3.2")
         .output()
