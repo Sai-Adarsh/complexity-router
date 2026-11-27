@@ -292,6 +292,50 @@ fn defaults_to_the_documented_loopback_port_without_an_override() {
     );
 }
 
+#[tokio::test]
+async fn rejects_oversized_upstream_responses_and_preserves_at_limit_responses() {
+    const LIMIT: usize = 4 * 1024 * 1024;
+    let upstream = Router::new().route(
+        "/v1/chat/completions",
+        post(|Json(body): Json<Value>| async move {
+            let prompt = body["messages"][0]["content"].as_str().unwrap();
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", "text/plain".parse().unwrap());
+            if prompt != "fixed" {
+                headers.insert("transfer-encoding", "chunked".parse().unwrap());
+            }
+            let size = if prompt == "limit" { LIMIT } else { LIMIT + 1 };
+            (StatusCode::OK, headers, "x".repeat(size))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let (mut router, client, base) = RouterProcess::start(&url, true).await;
+    let mut statuses = Vec::new();
+    for prompt in ["fixed", "chunked", "limit"] {
+        let reply = client
+            .post(format!("{base}/v1/chat/completions"))
+            .json(&json!({"messages": [{"role": "user", "content": prompt}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.headers()["x-inference-tier"], "small");
+        assert!(!reply.headers().contains_key("x-inference-fallback"));
+        statuses.push(reply.status());
+        if prompt == "limit" {
+            assert_eq!(reply.headers()["content-type"], "text/plain");
+            assert_eq!(reply.bytes().await.unwrap().len(), LIMIT);
+        }
+    }
+    assert_eq!(
+        statuses,
+        [StatusCode::BAD_GATEWAY, StatusCode::BAD_GATEWAY, StatusCode::OK]
+    );
+    router.interrupt();
+    upstream.abort();
+}
+
 #[test]
 fn rejects_unsupported_backend_urls_at_startup() {
     let output = Command::new(BIN)
