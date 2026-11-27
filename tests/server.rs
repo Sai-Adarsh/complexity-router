@@ -3,8 +3,9 @@
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
+    io::{ErrorKind, Read},
     net::TcpListener as Reservation,
-    process::{Child, Command},
+    process::{Child, Command, ExitStatus, Stdio},
     time::Duration,
 };
 use tokio::net::TcpListener;
@@ -12,6 +13,19 @@ use tokio::net::TcpListener;
 const BIN: &str = env!("CARGO_BIN_EXE_complexity-router");
 
 struct RouterProcess(Child);
+
+impl RouterProcess {
+    fn wait_for_exit(&mut self) -> ExitStatus {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                return status;
+            }
+            assert!(std::time::Instant::now() < deadline, "router did not exit");
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+}
 
 impl Drop for RouterProcess {
     fn drop(&mut self) {
@@ -88,19 +102,40 @@ async fn serves_chat_and_shuts_down_cleanly_on_interrupt() {
         .status()
         .unwrap();
     assert!(interrupt.success());
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    let status = loop {
-        if let Some(status) = router.0.try_wait().unwrap() {
-            break status;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "router did not exit on SIGINT"
-        );
-        std::thread::sleep(Duration::from_millis(15));
-    };
+    let status = router.wait_for_exit();
     assert!(status.success(), "router exited ungracefully: {status}");
     upstream.abort();
+}
+
+#[test]
+fn defaults_to_the_documented_loopback_port_without_an_override() {
+    let _port = match Reservation::bind("127.0.0.1:8010") {
+        Ok(listener) => Some(listener),
+        Err(error) if error.kind() == ErrorKind::AddrInUse => None,
+        Err(error) => panic!("reserve the default port: {error}"),
+    };
+    let mut router = RouterProcess(
+        Command::new(BIN)
+            .arg("serve")
+            .env_remove("ROUTER_BIND")
+            .env("ROUTE_THRESHOLD", "3.2")
+            .env("SMALL_BASE_URL", "http://127.0.0.1:1/")
+            .env("LARGE_BASE_URL", "http://127.0.0.1:1/")
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let status = router.wait_for_exit();
+    let mut stderr = String::new();
+    router
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(!status.success());
+    assert!(stderr.contains("AddrInUse"), "{stderr}");
 }
 
 #[test]
