@@ -14,6 +14,8 @@ mod paired;
 #[cfg(test)]
 mod tests;
 
+const MAX_UPSTREAM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Tier {
@@ -186,7 +188,14 @@ async fn complete(State(state): State<AppState>, Json(mut body): Json<Value>) ->
     response
 }
 
-async fn forward(upstream: reqwest::Response) -> Response {
+async fn forward(mut upstream: reqwest::Response) -> Response {
+    let too_large = "Model response exceeds 4 MiB.";
+    if upstream
+        .content_length()
+        .is_some_and(|length| length > MAX_UPSTREAM_RESPONSE_BYTES as u64)
+    {
+        return failure(StatusCode::BAD_GATEWAY, too_large);
+    }
     let status = upstream.status();
     let mut headers = HeaderMap::new();
     for name in [header::CONTENT_TYPE, header::RETRY_AFTER] {
@@ -194,9 +203,18 @@ async fn forward(upstream: reqwest::Response) -> Response {
             headers.insert(name, value.clone());
         }
     }
-    match upstream.bytes().await {
-        Ok(bytes) => (status, headers, bytes).into_response(),
-        Err(_) => failure(StatusCode::BAD_GATEWAY, "Model response was incomplete."),
+    let mut body = Vec::new();
+    loop {
+        match upstream.chunk().await {
+            Ok(Some(chunk)) => {
+                if chunk.len() > MAX_UPSTREAM_RESPONSE_BYTES - body.len() {
+                    return failure(StatusCode::BAD_GATEWAY, too_large);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => return (status, headers, body).into_response(),
+            Err(_) => return failure(StatusCode::BAD_GATEWAY, "Model response was incomplete."),
+        }
     }
 }
 
