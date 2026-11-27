@@ -2,6 +2,7 @@
 
 use axum::{
     Json, Router,
+    body::Body,
     http::{HeaderMap, StatusCode},
     routing::post,
 };
@@ -299,13 +300,14 @@ async fn rejects_oversized_upstream_responses_and_preserves_at_limit_responses()
         "/v1/chat/completions",
         post(|Json(body): Json<Value>| async move {
             let prompt = body["messages"][0]["content"].as_str().unwrap();
-            let mut headers = HeaderMap::new();
-            headers.insert("content-type", "text/plain".parse().unwrap());
-            if prompt != "fixed" {
-                headers.insert("transfer-encoding", "chunked".parse().unwrap());
-            }
             let size = if prompt == "limit" { LIMIT } else { LIMIT + 1 };
-            (StatusCode::OK, headers, "x".repeat(size))
+            let body = Body::from("x".repeat(size));
+            let body = if prompt == "fixed" {
+                body
+            } else {
+                Body::from_stream(body.into_data_stream())
+            };
+            (StatusCode::OK, [("content-type", "text/plain")], body)
         }),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -330,7 +332,11 @@ async fn rejects_oversized_upstream_responses_and_preserves_at_limit_responses()
     }
     assert_eq!(
         statuses,
-        [StatusCode::BAD_GATEWAY, StatusCode::BAD_GATEWAY, StatusCode::OK]
+        [
+            StatusCode::BAD_GATEWAY,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::OK
+        ]
     );
     router.interrupt();
     upstream.abort();
