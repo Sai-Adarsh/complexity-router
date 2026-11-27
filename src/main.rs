@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::HashMap, env, fs::File, io::{BufRead, BufReader}, time::Duration};
 
+mod paired;
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Tier {
@@ -59,8 +63,12 @@ fn classify(prompt: &str, threshold: f64, force_large: bool) -> Decision {
     let score = 0.65 * token_entropy_bits + 0.8 * marker_count as f64
         + 0.5 * (1.0 + words as f64 / 32.0).log2()
         + if prompt.contains("```") { 1.5 } else { 0.0 };
-    let route = if force_large || score >= threshold { Tier::Large } else { Tier::Small };
+    let route = route_score(score, threshold, force_large);
     Decision { route, words, token_entropy_bits, score }
+}
+
+fn route_score(score: f64, threshold: f64, force_large: bool) -> Tier {
+    if force_large || score >= threshold { Tier::Large } else { Tier::Small }
 }
 
 #[derive(Clone)]
@@ -97,12 +105,12 @@ fn failure(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": { "message": message } }))).into_response()
 }
 
-async fn complete(State(state): State<AppState>, Json(mut body): Json<Value>) -> Response {
+fn route_input(body: &Value) -> Result<(String, bool), &'static str> {
     if body.get("stream").is_some_and(|stream| stream != false) {
-        return failure(StatusCode::BAD_REQUEST, "Use stream=false with this router.");
+        return Err("Use stream=false with this router.");
     }
     let Some(messages) = body.get("messages").and_then(Value::as_array) else {
-        return failure(StatusCode::BAD_REQUEST, "messages must be an array.");
+        return Err("messages must be an array.");
     };
     let mut context = Vec::new();
     let mut force_large = body.get("tools").is_some_and(|tools| !tools.is_null());
@@ -111,7 +119,7 @@ async fn complete(State(state): State<AppState>, Json(mut body): Json<Value>) ->
         match message.get("role").and_then(Value::as_str) {
             Some("user") => has_user = true,
             Some("system" | "developer" | "assistant" | "tool") => {}
-            _ => return failure(StatusCode::BAD_REQUEST, "Each message needs a supported role."),
+            _ => return Err("Each message needs a supported role."),
         }
         if let Some(content) = message.get("content") {
             match content {
@@ -122,9 +130,17 @@ async fn complete(State(state): State<AppState>, Json(mut body): Json<Value>) ->
         }
     }
     if !has_user {
-        return failure(StatusCode::BAD_REQUEST, "Include a user message.");
+        return Err("Include a user message.");
     }
-    let decision = classify(&context.join("\n"), state.threshold, force_large);
+    Ok((context.join("\n"), force_large))
+}
+
+async fn complete(State(state): State<AppState>, Json(mut body): Json<Value>) -> Response {
+    let (context, force_large) = match route_input(&body) {
+        Ok(input) => input,
+        Err(error) => return failure(StatusCode::BAD_REQUEST, error),
+    };
+    let decision = classify(&context, state.threshold, force_large);
     let backend = match decision.route {
         Tier::Small => &state.small,
         Tier::Large => &state.large,
@@ -203,6 +219,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         ["evaluate", file] => evaluate(file, threshold),
+        ["evaluate-paired", records, rates, thresholds @ ..] => {
+            paired::evaluate(records, rates, thresholds, threshold)
+        }
         ["serve"] | [] => {
             let state = AppState {
                 client: reqwest::Client::builder().timeout(Duration::from_secs(120))
@@ -218,9 +237,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_state(state);
             let listener = tokio::net::TcpListener::bind(env::var("ROUTER_BIND").unwrap_or_else(|_| "127.0.0.1:8010".into())).await?;
             eprintln!("Complexity router listening on {}", listener.local_addr()?);
-            axum::serve(listener, app).await?;
+            axum::serve(listener, app).with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            }).await?;
             Ok(())
         }
-        _ => Err("usage: complexity-router [demo | evaluate PROMPTS.jsonl | serve]".into()),
+        _ => Err("usage: complexity-router [demo | evaluate PROMPTS.jsonl | evaluate-paired RECORDS.jsonl RATES.json [THRESHOLD ...] | serve]".into()),
     }
 }
