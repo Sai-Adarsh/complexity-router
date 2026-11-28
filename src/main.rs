@@ -143,7 +143,14 @@ fn route_input(body: &Value) -> Result<(String, bool), &'static str> {
     for message in messages {
         match message.get("role").and_then(Value::as_str) {
             Some("user") => has_user = true,
-            Some("system" | "developer" | "assistant" | "tool") => {}
+            Some("assistant") => {
+                force_large |= message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .is_some_and(|calls| !calls.is_empty());
+            }
+            Some("tool") => force_large = true,
+            Some("system" | "developer") => {}
             _ => return Err("Each message needs a supported role."),
         }
         if let Some(content) = message.get("content") {

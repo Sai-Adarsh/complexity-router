@@ -26,7 +26,7 @@ The gateway serves nonstreaming chat completions and binds to loopback by defaul
 
 ## Routing and fallback
 
-The score combines Shannon entropy over case-folded words, prompt length, reasoning terms, and code blocks. Set `ROUTE_THRESHOLD` to change the cutoff. Tool and multimodal requests go directly to the large model. The gateway replaces the request's model ID and reports the final attempted tier in `x-inference-tier`.
+The score combines Shannon entropy over case-folded words, prompt length, reasoning terms, and code blocks. Set `ROUTE_THRESHOLD` to change the cutoff. Tool and multimodal requests go directly to the large model. This includes tool calls and results in message history. The gateway replaces the request's model ID and reports the final attempted tier in `x-inference-tier`.
 
 Set `ROUTER_ALLOW_LARGE_FALLBACK=true` to try the large backend once after HTTP 429 or 503 from the small backend. Enable it only if the large backend is approved to receive the same payload and its cost is acceptable.
 
