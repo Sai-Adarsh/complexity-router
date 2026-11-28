@@ -391,3 +391,37 @@ fn rejects_unsupported_backend_urls_at_startup() {
         String::from_utf8_lossy(&output.stderr).contains("SMALL_BASE_URL must use HTTP or HTTPS")
     );
 }
+
+#[tokio::test]
+async fn routes_completed_tool_turns_to_large_without_new_tool_definitions() {
+    let upstream = Router::new().route(
+        "/v1/chat/completions",
+        post(|Json(body): Json<Value>| async move { Json(body) }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let (mut router, client, base) = RouterProcess::start(&upstream_url, false).await;
+    let messages = json!([
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "tool_calls": [{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "weather", "arguments": "{}"}
+        }]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "Sunny"},
+    ]);
+    let response = client
+        .post(format!("{base}/v1/chat/completions"))
+        .json(&json!({"messages": messages}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-inference-tier"], "large");
+    let forwarded: Value = response.json().await.unwrap();
+    assert_eq!(forwarded["model"], "larger-fixture");
+    assert_eq!(forwarded["messages"], messages);
+    router.interrupt();
+    upstream.abort();
+}
